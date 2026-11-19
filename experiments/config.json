@@ -1,0 +1,10 @@
+{
+  "points": 10000000,
+  "runs": 5,
+  "threads": [1, 2, 4, 6, 12, 24, 100],
+  "tradeoff_threads": [6, 12],
+  "batch_sizes": [1, 10, 100, 1000, 10000],
+  "master_seed": 42,
+  "schedule_seed": 20261119,
+  "timeout_seconds": 300
+}
