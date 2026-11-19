@@ -27,9 +27,9 @@ typedef struct {
     uint64_t n;
     uint64_t k;
     uint64_t seed;
-    double t_end;
 } Worker;
 
+static pthread_barrier_t ready, start, done;
 static uint64_t g_count;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -40,6 +40,19 @@ static double now(void) {
         exit(EXIT_FAILURE);
     }
     return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+static void check_thread(int rc, const char *operation) {
+    if (rc != 0) {
+        fprintf(stderr, "%s: %s\n", operation, strerror(rc));
+        exit(EXIT_FAILURE);
+    }
+}
+
+static void meet(pthread_barrier_t *barrier) {
+    int rc = pthread_barrier_wait(barrier);
+    if (rc != PTHREAD_BARRIER_SERIAL_THREAD)
+        check_thread(rc, "pthread_barrier_wait");
 }
 
 static uint64_t splitmix64(uint64_t *s) {
@@ -94,9 +107,9 @@ static bool gate_wait(Gate *g) {
     return go;
 }
 
-static void gate_release(Gate *g, double *t0) {
+/* Untimed launch guard: abort safely if only some threads were created. */
+static void gate_release(Gate *g) {
     pthread_mutex_lock(&g->mutex);
-    *t0 = now();
     g->go = true;
     pthread_cond_broadcast(&g->cond);
     pthread_mutex_unlock(&g->mutex);
@@ -114,6 +127,8 @@ static void *worker(void *arg) {
     uint64_t s = w->seed, n = w->n, k = w->k, left = k, local = 0;
 
     if (!gate_wait(w->gate)) return NULL;
+    meet(&ready);
+    meet(&start);
 
     for (uint64_t i = 0; i < n; i++) {
         double x = rnd(&s), y = rnd(&s);
@@ -135,7 +150,7 @@ static void *worker(void *arg) {
         pthread_mutex_unlock(&g_lock);
     }
 
-    w->t_end = now();
+    meet(&done);
     return NULL;
 }
 
@@ -159,6 +174,10 @@ static int run_once(uint64_t N, unsigned T, uint64_t k,
         return -1;
     }
 
+    check_thread(pthread_barrier_init(&ready, NULL, T + 1), "init ready");
+    check_thread(pthread_barrier_init(&start, NULL, T + 1), "init start");
+    check_thread(pthread_barrier_init(&done, NULL, T + 1), "init done");
+
     g_count = 0;
     uint64_t base = N / T, rest = N % T;
     unsigned created = 0;
@@ -178,34 +197,33 @@ static int run_once(uint64_t N, unsigned T, uint64_t k,
     if (created < T) {
         gate_abort(&gate);
         for (unsigned t = 0; t < created; t++) pthread_join(th[t], NULL);
+        check_thread(pthread_barrier_destroy(&ready), "destroy ready");
+        check_thread(pthread_barrier_destroy(&start), "destroy start");
+        check_thread(pthread_barrier_destroy(&done), "destroy done");
         gate_destroy(&gate);
         free(th);
         free(w);
         return -1;
     }
 
-    double t0;
-    gate_release(&gate, &t0);
+    /* Same timing boundaries as Approach 2: setup and joins are excluded. */
+    gate_release(&gate);
+    meet(&ready);
+    double t0 = now();
+    meet(&start);
+    meet(&done);
+    *inside = g_count;
+    *elapsed = now() - t0;
 
-    double t_last = t0;
-    int status = 0;
-    for (unsigned t = 0; t < T; t++) {
-        rc = pthread_join(th[t], NULL);
-        if (rc) {
-            fprintf(stderr, "pthread_join: %s\n", strerror(rc));
-            status = -1;
-        } else if (w[t].t_end > t_last) {
-            t_last = w[t].t_end;
-        }
-    }
+    for (unsigned t = 0; t < T; t++)
+        check_thread(pthread_join(th[t], NULL), "pthread_join");
 
+    check_thread(pthread_barrier_destroy(&ready), "destroy ready");
+    check_thread(pthread_barrier_destroy(&start), "destroy start");
+    check_thread(pthread_barrier_destroy(&done), "destroy done");
     gate_destroy(&gate);
     free(th);
     free(w);
-    if (status) return -1;
-
-    *inside = g_count;
-    *elapsed = t_last - t0;
     return 0;
 }
 
