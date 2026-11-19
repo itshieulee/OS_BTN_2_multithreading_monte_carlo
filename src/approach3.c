@@ -1,135 +1,267 @@
-/*
- * Approach 3 - Monte Carlo pi with a SHARED counter protected by a mutex.
- *
- * Every thread generates N/T random points. Each time a point falls inside
- * the circle, the thread locks the mutex, increments the global counter,
- * and unlocks. Correct (no race condition) but slow because of lock contention.
- *
- * Build: gcc -O3 -pthread -Wall -Wextra approach3.c -o approach3 -lm
- * Run:   ./approach3 -n 30000000 -t 4 -r 5
- */
+#define _POSIX_C_SOURCE 200809L
+#include <errno.h>
+#include <inttypes.h>
+#include <math.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <string.h>
-#include <math.h>
 #include <time.h>
-#include <pthread.h>
 
-/* ---------- shared state ---------- */
-static long long       g_count = 0;                       /* shared counter  */
-static pthread_mutex_t g_lock  = PTHREAD_MUTEX_INITIALIZER;
-static pthread_barrier_t g_start;                         /* common start line */
+#define MASTER_SEED 42ULL
+#define DEFAULT_POINTS 100000000ULL
+#define MAX_THREADS 4096
+#define MAX_RUNS 1000000
 
-/* ---------- timing ---------- */
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    bool go;
+    bool abort;
+} Gate;
+
+typedef struct {
+    Gate *gate;
+    uint64_t n;
+    uint64_t k;
+    uint64_t seed;
+    double t_end;
+} Worker;
+
+static uint64_t g_count;
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static double now(void) {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        perror("clock_gettime");
+        exit(EXIT_FAILURE);
+    }
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
-/* ---------- independent random generator per thread ---------- */
-static uint64_t splitmix64(uint64_t *s) {                 /* builds seeds only */
+static uint64_t splitmix64(uint64_t *s) {
     uint64_t z = (*s += 0x9E3779B97F4A7C15ULL);
     z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
     z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
     return z ^ (z >> 31);
 }
-static inline uint64_t xorshift64s(uint64_t *s) {         /* the generator */
+
+static inline uint64_t xorshift64s(uint64_t *s) {
     uint64_t x = *s;
-    x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
     *s = x;
     return x * 0x2545F4914F6CDD1DULL;
 }
-static inline double rnd(uint64_t *s) {                   /* uniform [-1, 1) */
+
+static inline double rnd(uint64_t *s) {
     return ((xorshift64s(s) >> 11) * (1.0 / 9007199254740992.0)) * 2.0 - 1.0;
 }
+
 static uint64_t make_seed(uint64_t master, int tid) {
     uint64_t s = master ^ ((uint64_t)(tid + 1) * 0xD1B54A32D192ED03ULL);
     uint64_t v = splitmix64(&s);
     return v ? v : 1;
 }
 
-/* ---------- worker ---------- */
-typedef struct {
-    long long n;        /* points this thread must generate */
-    uint64_t  seed;
-    double    t_end;    /* when this thread finished        */
-} Worker;
+static int gate_init(Gate *g) {
+    int rc = pthread_mutex_init(&g->mutex, NULL);
+    if (rc) return rc;
+    rc = pthread_cond_init(&g->cond, NULL);
+    if (rc) {
+        pthread_mutex_destroy(&g->mutex);
+        return rc;
+    }
+    g->go = false;
+    g->abort = false;
+    return 0;
+}
 
-static void *worker(void *p) {
-    Worker *w = p;
-    uint64_t s = w->seed;
-    long long n = w->n;
+static void gate_destroy(Gate *g) {
+    pthread_cond_destroy(&g->cond);
+    pthread_mutex_destroy(&g->mutex);
+}
 
-    pthread_barrier_wait(&g_start);          /* wait until everyone is ready */
+static bool gate_wait(Gate *g) {
+    pthread_mutex_lock(&g->mutex);
+    while (!g->go && !g->abort) pthread_cond_wait(&g->cond, &g->mutex);
+    bool go = g->go;
+    pthread_mutex_unlock(&g->mutex);
+    return go;
+}
 
-    for (long long i = 0; i < n; i++) {
+static void gate_release(Gate *g, double *t0) {
+    pthread_mutex_lock(&g->mutex);
+    *t0 = now();
+    g->go = true;
+    pthread_cond_broadcast(&g->cond);
+    pthread_mutex_unlock(&g->mutex);
+}
+
+static void gate_abort(Gate *g) {
+    pthread_mutex_lock(&g->mutex);
+    g->abort = true;
+    pthread_cond_broadcast(&g->cond);
+    pthread_mutex_unlock(&g->mutex);
+}
+
+static void *worker(void *arg) {
+    Worker *w = arg;
+    uint64_t s = w->seed, n = w->n, k = w->k, left = k, local = 0;
+
+    if (!gate_wait(w->gate)) return NULL;
+
+    for (uint64_t i = 0; i < n; i++) {
         double x = rnd(&s), y = rnd(&s);
-        if (x * x + y * y <= 1.0) {
-            pthread_mutex_lock(&g_lock);     /* ---- critical section ---- */
-            g_count++;
-            pthread_mutex_unlock(&g_lock);   /* --------------------------- */
+        if (x * x + y * y <= 1.0) local++;
+        if (--left == 0) {
+            left = k;
+            if (local) {
+                pthread_mutex_lock(&g_lock);
+                g_count += local;
+                pthread_mutex_unlock(&g_lock);
+                local = 0;
+            }
         }
+    }
+
+    if (local) {
+        pthread_mutex_lock(&g_lock);
+        g_count += local;
+        pthread_mutex_unlock(&g_lock);
     }
 
     w->t_end = now();
     return NULL;
 }
 
-/* One run: returns elapsed seconds, stores the number of points in the circle. */
-static double run_once(long long N, int T, uint64_t seed, long long *inside) {
-    /* ---- setup: NOT timed ---- */
-    pthread_t *th = malloc(T * sizeof *th);
-    Worker    *w  = calloc(T, sizeof *w);
-    g_count = 0;                             /* reset before EVERY run */
-    pthread_barrier_init(&g_start, NULL, T + 1);
-
-    for (int t = 0; t < T; t++) {
-        w[t].n    = N / T + (t == T - 1 ? N % T : 0);   /* remainder -> last thread */
-        w[t].seed = make_seed(seed, t);
-        pthread_create(&th[t], NULL, worker, &w[t]);
+static int run_once(uint64_t N, unsigned T, uint64_t k,
+                    uint64_t *inside, double *elapsed) {
+    pthread_t *th = calloc(T, sizeof *th);
+    Worker *w = calloc(T, sizeof *w);
+    if (!th || !w) {
+        perror("calloc");
+        free(th);
+        free(w);
+        return -1;
     }
 
-    pthread_barrier_wait(&g_start);          /* release all threads ...   */
-    double t0 = now();                       /* ... and start the clock   */
+    Gate gate;
+    int rc = gate_init(&gate);
+    if (rc) {
+        fprintf(stderr, "gate_init: %s\n", strerror(rc));
+        free(th);
+        free(w);
+        return -1;
+    }
+
+    g_count = 0;
+    uint64_t base = N / T, rest = N % T;
+    unsigned created = 0;
+    for (unsigned t = 0; t < T; t++) {
+        w[t].gate = &gate;
+        w[t].n = base + (t == T - 1 ? rest : 0);
+        w[t].k = k;
+        w[t].seed = make_seed(MASTER_SEED, (int)t);
+        rc = pthread_create(&th[t], NULL, worker, &w[t]);
+        if (rc) {
+            fprintf(stderr, "pthread_create: %s\n", strerror(rc));
+            break;
+        }
+        created++;
+    }
+
+    if (created < T) {
+        gate_abort(&gate);
+        for (unsigned t = 0; t < created; t++) pthread_join(th[t], NULL);
+        gate_destroy(&gate);
+        free(th);
+        free(w);
+        return -1;
+    }
+
+    double t0;
+    gate_release(&gate, &t0);
 
     double t_last = t0;
-    for (int t = 0; t < T; t++) {
-        pthread_join(th[t], NULL);
-        if (w[t].t_end > t_last) t_last = w[t].t_end;
+    int status = 0;
+    for (unsigned t = 0; t < T; t++) {
+        rc = pthread_join(th[t], NULL);
+        if (rc) {
+            fprintf(stderr, "pthread_join: %s\n", strerror(rc));
+            status = -1;
+        } else if (w[t].t_end > t_last) {
+            t_last = w[t].t_end;
+        }
     }
 
-    pthread_barrier_destroy(&g_start);
+    gate_destroy(&gate);
+    free(th);
+    free(w);
+    if (status) return -1;
+
     *inside = g_count;
-    free(th); free(w);
-    return t_last - t0;                      /* time until the slowest thread is done */
+    *elapsed = t_last - t0;
+    return 0;
+}
+
+static bool parse_u64(const char *s, uint64_t max, uint64_t *out) {
+    if (s[0] < '0' || s[0] > '9') return false;
+    char *end;
+    errno = 0;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (*end || errno || v == 0 || v > max) return false;
+    *out = v;
+    return true;
 }
 
 int main(int argc, char **argv) {
-    long long N = 30000000LL;
-    int T = 4, runs = 5;
-    uint64_t seed = 123456789ULL;
+    uint64_t N = DEFAULT_POINTS, T = 4, runs = 5, k = 1;
 
     for (int i = 1; i < argc; i++) {
-        if      (!strcmp(argv[i], "-n") && i + 1 < argc) N    = atoll(argv[++i]);
-        else if (!strcmp(argv[i], "-t") && i + 1 < argc) T    = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-r") && i + 1 < argc) runs = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-s") && i + 1 < argc) seed = strtoull(argv[++i], NULL, 10);
-        else { fprintf(stderr, "usage: %s [-n points] [-t threads] [-r runs] [-s seed]\n", argv[0]); return 1; }
+        uint64_t *dst, max;
+        const char *name;
+        if (!strcmp(argv[i], "-n")) { dst = &N; max = UINT64_MAX; name = "points"; }
+        else if (!strcmp(argv[i], "-t")) { dst = &T; max = MAX_THREADS; name = "threads"; }
+        else if (!strcmp(argv[i], "-r")) { dst = &runs; max = MAX_RUNS; name = "runs"; }
+        else if (!strcmp(argv[i], "-k")) { dst = &k; max = UINT64_MAX; name = "k"; }
+        else {
+            fprintf(stderr, "usage: %s [-n points] [-t threads] [-r runs] [-k batch]\n", argv[0]);
+            return EXIT_FAILURE;
+        }
+        if (i + 1 >= argc || !parse_u64(argv[++i], max, dst)) {
+            fprintf(stderr, "%s must be a positive integer up to %" PRIu64 "\n", name, max);
+            return EXIT_FAILURE;
+        }
     }
-    if (T < 1) T = 1;
-    if (runs < 1) runs = 1;
 
     double sum = 0, sum2 = 0;
-    for (int r = 0; r < runs; r++) {
-        long long inside;
-        double t  = run_once(N, T, seed + 99991ULL * r, &inside);   /* new seed each run */
-        double pi = 4.0 * inside / N;
-        sum += t; sum2 += t * t;
-        printf("run %d: time=%.4f s  inside=%lld  pi=%.7f\n", r + 1, t, inside, pi);
+    uint64_t first = 0;
+    bool same = true;
+    for (uint64_t r = 0; r < runs; r++) {
+        uint64_t inside;
+        double t;
+        if (run_once(N, (unsigned)T, k, &inside, &t) != 0) return EXIT_FAILURE;
+        if (r == 0) first = inside;
+        else if (inside != first) same = false;
+        sum += t;
+        sum2 += t * t;
+        printf("run %" PRIu64 ": time=%.4f s  inside=%" PRIu64 "  pi=%.7f\n",
+               r + 1, t, inside, 4.0 * (double)inside / (double)N);
     }
-    double mean = sum / runs, sd = sqrt(fmax(0.0, sum2 / runs - mean * mean));
-    printf("threads=%d points=%lld  mean=%.4f s  sd=%.4f s\n", T, N, mean, sd);
-    return 0;
+
+    double mean = sum / (double)runs;
+    double sd = sqrt(fmax(0.0, sum2 / (double)runs - mean * mean));
+    printf("threads=%u points=%" PRIu64 " k=%" PRIu64 "  mean=%.4f s  sd=%.4f s\n",
+           (unsigned)T, N, k, mean, sd);
+
+    if (!same) {
+        fprintf(stderr, "hit count differs between runs\n");
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
 }
