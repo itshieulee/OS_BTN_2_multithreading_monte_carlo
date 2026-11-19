@@ -1,0 +1,98 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu": {
+    "logical_cpus": 12,
+    "physical_cores": 6,
+    "model": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz"
+  },
+  "compiler": "gcc (MinGW-W64 x86_64-ucrt-posix-seh, built by Brecht Sanders, r8) 13.2.0",
+  "commands": [
+    [
+      "gcc",
+      "-O3",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-pthread",
+      "-static",
+      "C:\\Users\\pc\\Documents\\Codex\\2026-11-19\\https-github-com-hminhhminh-teamassignment2-blob\\outputs\\experiment-visualization\\experiments\\build\\single_adapter.c",
+      "-o",
+      "C:\\Users\\pc\\Documents\\Codex\\2026-11-19\\https-github-com-hminhhminh-teamassignment2-blob\\outputs\\experiment-visualization\\experiments\\build\\single.exe",
+      "-lm"
+    ],
+    [
+      "gcc",
+      "-O3",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-pthread",
+      "-static",
+      "C:\\Users\\pc\\Documents\\Codex\\2026-11-19\\https-github-com-hminhhminh-teamassignment2-blob\\outputs\\experiment-visualization\\experiments\\build\\local_adapter.c",
+      "-o",
+      "C:\\Users\\pc\\Documents\\Codex\\2026-11-19\\https-github-com-hminhhminh-teamassignment2-blob\\outputs\\experiment-visualization\\experiments\\build\\local.exe",
+      "-lm"
+    ],
+    [
+      "gcc",
+      "-O3",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-pthread",
+      "-static",
+      "C:\\Users\\pc\\Documents\\Codex\\2026-11-19\\https-github-com-hminhhminh-teamassignment2-blob\\outputs\\experiment-visualization\\experiments\\build\\shared_adapter.c",
+      "-o",
+      "C:\\Users\\pc\\Documents\\Codex\\2026-11-19\\https-github-com-hminhhminh-teamassignment2-blob\\outputs\\experiment-visualization\\experiments\\build\\shared.exe",
+      "-lm"
+    ]
+  ],
+  "config": {
+    "points": 10000000,
+    "runs": 5,
+    "threads": [
+      1,
+      2,
+      4,
+      6,
+      12,
+      24,
+      100
+    ],
+    "tradeoff_threads": [
+      6,
+      12
+    ],
+    "batch_sizes": [
+      1,
+      10,
+      100,
+      1000,
+      10000
+    ],
+    "master_seed": 42,
+    "schedule_seed": 20261119,
+    "timeout_seconds": 300
+  },
+  "sources": {
+    "single": {
+      "path": "approach1_single.c",
+      "commit": "58594d8f5fcbaa36a0af65067f1f13ef97de0495",
+      "sha256": "e2eeb98bb28e02ac6461449af824206f8ff3bc37b76de78e53d8b2985f51b8b3"
+    },
+    "local": {
+      "path": "approach2.c",
+      "commit": "c4b5fc986a6aa37ea76587eff81bd34a641c8919",
+      "sha256": "12c1e835dada8ab5407ed44b36994d9666264444f5d1d438a753bdf39f15b4dd"
+    },
+    "shared": {
+      "path": "src/approach3.c",
+      "commit": "de068d05c30cb1c94fa4ccbbd06126470f46209a",
+      "sha256": "452a598ce6b67ad3dadf97611bc87fbc97e4c42db003085dbbf15f448e1e6464"
+    }
+  },
+  "timing": "Source run_once/run_parallel wall-clock intervals. Parallel: ready, t0, start, done, final count, t1; excludes allocation, creation, join and I/O. Single: sampling loop only.",
+  "baseline_adapter": "Single inside recovered by rounding pi*N/4; N restricted to <= 2^53.",
+  "started_utc": "2026-11-19T08:41:17.083113+00:00",
+  "completed_utc": "2026-11-19T08:42:01.765306+00:00"
+}
