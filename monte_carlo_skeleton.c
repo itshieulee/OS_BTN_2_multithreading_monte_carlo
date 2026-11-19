@@ -43,23 +43,22 @@ static void meet(pthread_barrier_t *barrier) {
         check_thread(rc, "pthread_barrier_wait");
 }
 
-static void unfinished(const char *name) {
-    fprintf(stderr, "Implement %s first.\n", name);
-    exit(EXIT_FAILURE);
-}
-
 /* 1. Generate one point using only the caller's RNG state. */
 static bool point_is_inside(unsigned *seed) {
     (void)seed;
-    unfinished("point_is_inside");
-    return false;
+    float x = 2.0 * (rand_r(seed) / (RAND_MAX +1.0)) -1.0;
+    float y = 2.0 * (rand_r(seed) / (RAND_MAX + 1.0)) - 1.0;
+    
+    return x*x + y*y <= 1.0;
 }
 
 /* 2. Give each worker its sample count and initial seed. */
 static void prepare_worker(Worker *w, unsigned id,
                            unsigned nthreads, uint64_t points) {
     (void)w; (void)id; (void)nthreads; (void)points;
-    unfinished("prepare_worker");
+     w->samples =  (id < (points % nthreads))? (points/nthreads + 1) : points/nthreads;
+     w->seed = BASE_SEED + id;
+     w->inside = 0.0;
 }
 
 /* 3. Map: count this worker's hits locally, then publish once. */
@@ -72,9 +71,11 @@ static void *worker_main(void *arg) {
     meet(&start);
     /* TODO: loop over samples and call point_is_inside(&seed) for each. */
     (void)samples; (void)seed; (void)point_is_inside;
-    unfinished("worker_main sampling loop");
-    w->inside = hits;
-    meet(&done);
+    for(uint64_t i = 0; i < samples; i++){
+      if(point_is_inside(&seed)) hits++;
+    }
+     w->inside = hits;
+      meet(&done);
     return NULL;
 }
 
@@ -103,7 +104,9 @@ static uint64_t run_parallel(unsigned nthreads, uint64_t points,
     meet(&done);
     uint64_t inside = 0;
     /* All workers have published their results by this point. */
-    unfinished("run_parallel reduction");
+    for(unsigned i = 0; i < nthreads; i++){
+      inside += workers[i].inside ;
+    }
     *elapsed = now_seconds() - begin;
 
     for (unsigned i = 0; i < nthreads; ++i)
