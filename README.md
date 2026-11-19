@@ -1,27 +1,12 @@
-# Monte Carlo π — Experiments & Visualization
+# Monte Carlo π
 
-Phần Thành viên 4: thực nghiệm cả ba approach, dữ liệu từng lần chạy, tổng hợp và biểu đồ, cùng thí nghiệm tần suất cập nhật shared counter.
+Single-thread, local accumulation and shared-mutex implementations.
 
-- [Hướng dẫn tái lập](experiments/README.md)
-- [Kết quả và phân tích](results/analysis.md)
-- [Dữ liệu từng lần chạy](results/raw.csv)
-- [Tổng hợp](results/summary.csv)
-- [Kết quả trade-off](results/tradeoff.csv)
-- [Dữ liệu Excel](results/measurements.xlsx)
-- [Môi trường và nguồn code](results/environment.json)
+Requirements: Python 3.10+, GCC with POSIX pthread support.
 
-## Execution time
+```bash
+python -m pip install -r experiments/requirements.txt
+python experiments/generate_figures.py
+```
 
-![Execution time](results/execution_time.png)
-
-## Speedup
-
-![Speedup](results/speedup.png)
-
-## Parallel efficiency
-
-![Efficiency](results/efficiency.png)
-
-## Synchronization frequency trade-off
-
-![Trade-off](results/tradeoff.png)
+See [experiment commands](experiments/README.md). Data, Excel and PNG/SVG charts are in `results/`.
