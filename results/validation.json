@@ -1,0 +1,7 @@
+{
+  "status": "passed",
+  "measurements": 115,
+  "configurations": 23,
+  "runs_each": 5,
+  "counter_checks": "baseline == local(t=1); local == shared for each thread count and k; deterministic across runs"
+}
