@@ -9,14 +9,17 @@ static double elapsed_seconds(struct timespec start, struct timespec end) {
            (double)(end.tv_nsec - start.tv_nsec) / 1e9;
 }
 
-static inline uint64_t make_seed(uint64_t master_seed, uint64_t thread_id) {
-    uint64_t x = master_seed ^ (thread_id * 0x9e3779b97f4a7c15ULL + 1ULL);
-    x ^= x >> 30;
-    x *= 0xbf58476d1ce4e5b9ULL;
-    x ^= x >> 27;
-    x *= 0x94d049bb133111ebULL;
-    x ^= x >> 31;
-    return x ? x : 1ULL;
+static uint64_t splitmix64(uint64_t *s) {
+    uint64_t z = (*s += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+static uint64_t make_seed(uint64_t master, int tid) {
+    uint64_t s = master ^ ((uint64_t)(tid + 1) * 0xD1B54A32D192ED03ULL);
+    uint64_t v = splitmix64(&s);
+    return v ? v : 1;
 }
 
 static inline uint64_t xorshift64_star(uint64_t *state) {
@@ -58,7 +61,7 @@ static double run_once(uint64_t num_points, uint64_t seed, double *out_seconds) 
 int main(void) {
     const uint64_t num_points = 100000000ULL;
     const uint64_t master_seed = 42ULL;
-    const uint64_t seed = make_seed(master_seed, 0ULL);
+    const uint64_t seed = make_seed(master_seed, 0);
     const int runs = 5;
 
     double total_time = 0.0;
